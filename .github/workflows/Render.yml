@@ -1,97 +1,100 @@
 
-name: Edu Video Renderer
+name: Edu Motion Graphics Renderer
 
 on:
   workflow_dispatch:
     inputs:
-      drive_file_id:
-        description: "Google Drive ZIP File ID"
+      drive_url:
+        description: "Paste Full Google Drive ZIP URL"
         required: true
-        type: string
-
-      quality:
-        description: "Video Resolution"
-        required: true
-        type: choice
-        options:
-          - 1080p
-          - 720p
-
-      fps:
-        description: "Video FPS"
-        required: true
-        type: choice
-        options:
-          - "30"
-          - "60"
-
-      output_name:
-        description: "Output Video Name"
-        required: true
-        default: "video.mp4"
         type: string
 
 jobs:
   render:
+    name: Download and Render Video
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout
+      # Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      # Node Setup
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Install gdown
-        run: pip install gdown
+      # Python Setup
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: Download Google Drive ZIP
+      # Install Google Drive Downloader
+      - name: Install Gdown
         run: |
-          gdown "https://drive.google.com/uc?id=${{ inputs.drive_file_id }}" \
-          -O project.zip
+          python -m pip install --upgrade gdown
 
-      - name: Extract ZIP
+      # Download ZIP
+      - name: Download Project from Google Drive
+        env:
+          DRIVE_URL: ${{ inputs.drive_url }}
         run: |
-          unzip -q project.zip
-          if [ -d edu-video ]; then
-            echo "PROJECT_DIR=edu-video" >> $GITHUB_ENV
-          elif [ -d edu-motion-graphics/edu-video ]; then
-            echo "PROJECT_DIR=edu-motion-graphics/edu-video" >> $GITHUB_ENV
-          else
-            echo "Project folder not found"
+          gdown "$DRIVE_URL" -O edu-motion-graphics.zip
+
+          if [ ! -s edu-motion-graphics.zip ]; then
+            echo "ERROR: ZIP download failed!"
             exit 1
           fi
 
+          unzip -t edu-motion-graphics.zip
+
+      # Extract ZIP
+      - name: Extract Project
+        run: |
+          unzip -q edu-motion-graphics.zip
+
+          if [ ! -f edu-video/package.json ]; then
+            echo "ERROR: edu-video/package.json not found!"
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=edu-video" >> $GITHUB_ENV
+
+      # Install Dependencies
       - name: Install Dependencies
+        working-directory: ./edu-video
         run: npm install
-        working-directory: ${{ github.workspace }}/${{ env.PROJECT_DIR }}
 
-      - name: Setup Browser
+      # Prepare Remotion Browser
+      - name: Setup Remotion Browser
+        working-directory: ./edu-video
         run: npx remotion browser ensure
-        working-directory: ${{ github.workspace }}/${{ env.PROJECT_DIR }}
 
-      - name: Render Video
-        env:
-          QUALITY: ${{ inputs.quality }}
-          FPS: ${{ inputs.fps }}
-          OUTPUT_NAME: ${{ inputs.output_name }}
+      # Render Video
+      - name: Render Education Video
+        working-directory: ./edu-video
         run: |
           mkdir -p out
+          npm run build
 
-          npx remotion render \
-            src/index.ts \
-            Root \
-            "out/$OUTPUT_NAME" \
-            --scale="$( [ "$QUALITY" = "1080p" ] && echo 1 || echo 0.666667 )" \
-            --fps="$FPS"
-        working-directory: ${{ github.workspace }}/${{ env.PROJECT_DIR }}
+      # Verify Video
+      - name: Verify Output
+        run: |
+          if [ ! -s edu-video/out/video.mp4 ]; then
+            echo "ERROR: Video was not generated!"
+            exit 1
+          fi
 
-      - name: Upload Video
+          ls -lh edu-video/out/video.mp4
+
+      # Upload Video
+      - name: Upload Rendered Video
         uses: actions/upload-artifact@v4
         with:
-          name: rendered-video
-          path: ${{ env.PROJECT_DIR }}/out/${{ inputs.output_name }}
+          name: Education-Decline-Video
+          path: edu-video/out/video.mp4
           if-no-files-found: error
           retention-days: 7
