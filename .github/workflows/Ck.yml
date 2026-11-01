@@ -1,50 +1,41 @@
-
-name: Build Active M3U Playlist
-
+name: one-account
 on:
+  schedule:
+    - cron: "17,47 * * * *"      # ঘণ্টায় ২ বার
   workflow_dispatch:
-    inputs:
-      playlist_url:
-        description: "Source M3U playlist URL"
-        required: true
-        type: string
 
-permissions:
-  contents: write
+concurrency:
+  group: gmail-factory
+  cancel-in-progress: false
 
 jobs:
-  build:
+  create:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 20
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install FFmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Check streams
-        env:
-          PLAYLIST_URL: ${{ inputs.playlist_url }}
-        run: python check_playlist.py
-
-      - name: Commit and push
+      - name: Install
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          pip install patchright requests
+          patchright install chromium
+          patchright install-deps chromium
 
-          git add active_playlist.m3u
+      - name: Create one account
+        env:
+          SMS_API_KEY: ${{ secrets.SMS_API_KEY }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
+          SMS_COUNTRY: ${{ vars.SMS_COUNTRY }}
+        run: python create.py
 
-          if ! git diff --cached --quiet; then
-            git commit -m "Update active playlist"
-            git push
-          else
-            echo "No playlist changes."
-          fi
+      - name: Save result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: account-${{ github.run_id }}
+          path: out/
+          retention-days: 30
