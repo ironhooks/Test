@@ -1,100 +1,85 @@
 
-name: Edu Motion Graphics Renderer
+name: Network Analysis - beIN Sports
 
 on:
   workflow_dispatch:
-    inputs:
-      drive_url:
-        description: "Paste Full Google Drive ZIP URL"
-        required: true
-        type: string
+
+permissions:
+  contents: read
 
 jobs:
-  render:
-    name: Download and Render Video
+  analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 10
 
     steps:
-      # Checkout
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # Node Setup
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      # Python Setup
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
-      # Install Google Drive Downloader
-      - name: Install Gdown
+      - name: Install Playwright
         run: |
-          python -m pip install --upgrade gdown
+          pip install playwright
+          playwright install --with-deps chromium
 
-      # Download ZIP
-      - name: Download Project from Google Drive
-        env:
-          DRIVE_URL: ${{ inputs.drive_url }}
+      - name: Capture Network Metadata
         run: |
-          gdown "$DRIVE_URL" -O edu-motion-graphics.zip
+          cat > analyze.py <<'PY'
+          import asyncio
+          import json
+          from urllib.parse import urlparse
+          from playwright.async_api import async_playwright
 
-          if [ ! -s edu-motion-graphics.zip ]; then
-            echo "ERROR: ZIP download failed!"
-            exit 1
-          fi
+          TARGET = "https://cinewwchannels.pages.dev/bein1/"
+          records = []
 
-          unzip -t edu-motion-graphics.zip
+          async def main():
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch()
+                  page = await browser.new_page()
 
-      # Extract ZIP
-      - name: Extract Project
-        run: |
-          unzip -q edu-motion-graphics.zip
+                  page.on("response", lambda r: records.append({
+                      "host": urlparse(r.url).hostname,
+                      "resource_type": r.request.resource_type,
+                      "status": r.status,
+                      "content_type": r.headers.get("content-type", "")
+                  }) if r.request.resource_type not in
+                  ["media", "font"] else None)
 
-          if [ ! -f edu-video/package.json ]; then
-            echo "ERROR: edu-video/package.json not found!"
-            exit 1
-          fi
+                  try:
+                      await page.goto(
+                          TARGET,
+                          wait_until="domcontentloaded",
+                          timeout=60000
+                      )
+                      await page.wait_for_timeout(15000)
+                  except Exception as e:
+                      print("Navigation:", str(e))
 
-          echo "PROJECT_DIR=edu-video" >> $GITHUB_ENV
+                  report = {
+                      "target": urlparse(TARGET).hostname,
+                      "total_requests": len(records),
+                      "requests": records
+                  }
 
-      # Install Dependencies
-      - name: Install Dependencies
-        working-directory: ./edu-video
-        run: npm install
+                  with open("network-report.json", "w") as f:
+                      json.dump(report, f, indent=2)
 
-      # Prepare Remotion Browser
-      - name: Setup Remotion Browser
-        working-directory: ./edu-video
-        run: npx remotion browser ensure
+                  await browser.close()
 
-      # Render Video
-      - name: Render Education Video
-        working-directory: ./edu-video
-        run: |
-          mkdir -p out
-          npm run build
+          asyncio.run(main())
+          PY
 
-      # Verify Video
-      - name: Verify Output
-        run: |
-          if [ ! -s edu-video/out/video.mp4 ]; then
-            echo "ERROR: Video was not generated!"
-            exit 1
-          fi
+          python analyze.py
 
-          ls -lh edu-video/out/video.mp4
-
-      # Upload Video
-      - name: Upload Rendered Video
+      - name: Upload Network Report
         uses: actions/upload-artifact@v4
         with:
-          name: Education-Decline-Video
-          path: edu-video/out/video.mp4
+          name: network-analysis-report
+          path: network-report.json
           if-no-files-found: error
           retention-days: 7
