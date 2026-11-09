@@ -1,0 +1,298 @@
+
+name: ZooPLAY Secure APK Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      google_drive_url:
+        description: "Google Drive ZIP Source URL"
+        required: true
+        type: string
+
+      release_tag:
+        description: "GitHub Release Tag"
+        required: true
+        default: "latest-build"
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zooplay-release-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and Sign ZooPLAY APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+
+      # 1. Checkout Repository
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # 2. Setup Java
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # 3. Setup Android SDK
+      - name: Setup Android SDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+
+      # 4. Install Android SDK Packages
+      - name: Install Android SDK Packages
+        run: |
+          set -euo pipefail
+
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
+            -name sdkmanager -type f | head -n 1)
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager not found"
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --licenses || true
+
+          "$SDKMANAGER" --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;35.0.0"
+
+      # 5. Setup Gradle
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # 6. Install Download Tools
+      - name: Install Download Tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install gdown
+
+      # 7. Download Google Drive ZIP
+      - name: Download Source ZIP
+        env:
+          DRIVE_URL: ${{ inputs.google_drive_url }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$DRIVE_URL" ]; then
+            echo "Google Drive URL is missing"
+            exit 1
+          fi
+
+          gdown "$DRIVE_URL" -O source.zip
+
+          if [ ! -s source.zip ]; then
+            echo "ZIP download failed"
+            exit 1
+          fi
+
+          unzip -tq source.zip
+
+          echo "Download successful"
+
+      # 8. Extract Source Code
+      - name: Extract Source Code
+        run: |
+          set -euo pipefail
+
+          mkdir -p source
+          unzip -q source.zip -d source
+
+          echo "Source extracted"
+
+      # 9. Locate Android Project
+      - name: Locate Android Project
+        run: |
+          set -euo pipefail
+
+          SETTINGS_FILE=$(find source \
+            -type f \
+            \( -name settings.gradle.kts \
+            -o -name settings.gradle \) \
+            -not -path "*/.gradle/*" \
+            | head -n 1)
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "Android project not found"
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+
+          if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] && \
+             [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
+            echo "App module not found"
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Project found: $PROJECT_DIR"
+
+      # 10. Check Gradle Wrapper
+      - name: Prepare Gradle Wrapper
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            echo "GRADLE_CMD=./gradlew" >> "$GITHUB_ENV"
+          else
+            gradle --version
+            echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
+          fi
+
+      # 11. Build Release APK
+      - name: Build Release APK
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+
+          $GRADLE_CMD assembleRelease \
+            --no-daemon \
+            --stacktrace
+
+      # 12. Locate Release APK
+      - name: Locate Release APK
+        run: |
+          set -euo pipefail
+
+          APK=$(find "$PROJECT_DIR" \
+            -type f \
+            -path "*/build/outputs/apk/release/*" \
+            -name "*.apk" \
+            ! -name "*-unsigned.apk" \
+            | head -n 1)
+
+          if [ -z "$APK" ]; then
+            APK=$(find "$PROJECT_DIR" \
+              -type f \
+              -path "*/build/outputs/apk/release/*" \
+              -name "*-unsigned.apk" \
+              | head -n 1)
+          fi
+
+          if [ -z "$APK" ]; then
+            echo "Release APK not found"
+            exit 1
+          fi
+
+          echo "INPUT_APK=$APK" >> "$GITHUB_ENV"
+
+      # 13. Sign APK
+      - name: Sign Release APK
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$KEYSTORE_BASE64" ] || \
+             [ -z "$KEYSTORE_PASSWORD" ] || \
+             [ -z "$KEY_ALIAS" ] || \
+             [ -z "$KEY_PASSWORD" ]; then
+            echo "Missing release signing secrets"
+            exit 1
+          fi
+
+          KEYSTORE="$RUNNER_TEMP/zooplay-release.jks"
+
+          printf '%s' "$KEYSTORE_BASE64" \
+            | base64 --decode > "$KEYSTORE"
+
+          test -s "$KEYSTORE"
+
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/35.0.0"
+
+          mkdir -p signed
+
+          "$BUILD_TOOLS/zipalign" \
+            -f -v 4 \
+            "$INPUT_APK" \
+            "$RUNNER_TEMP/zooplay-aligned.apk"
+
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias "$KEY_ALIAS" \
+            --ks-pass env:KEYSTORE_PASSWORD \
+            --key-pass env:KEY_PASSWORD \
+            --out signed/ZooPLAY-release.apk \
+            "$RUNNER_TEMP/zooplay-aligned.apk"
+
+          rm -f "$KEYSTORE"
+
+          echo "APK signing completed"
+
+      # 14. Verify APK Signature
+      - name: Verify APK Signature
+        run: |
+          set -euo pipefail
+
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" \
+            verify \
+            --verbose \
+            --print-certs \
+            signed/ZooPLAY-release.apk
+
+          echo "Signature verification successful"
+
+      # 15. Generate SHA256
+      - name: Generate SHA256
+        run: |
+          set -euo pipefail
+
+          cd signed
+
+          sha256sum ZooPLAY-release.apk > SHA256SUMS.txt
+
+          cat SHA256SUMS.txt
+
+      # 16. Upload APK Artifact
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZooPLAY-Signed-Release
+          path: |
+            signed/ZooPLAY-release.apk
+            signed/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      # 17. Create GitHub Release
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: ZooPLAY Release ${{ inputs.release_tag }}
+          body: |
+            ZooPLAY Secure Release Build
+
+            Build Type: Release APK
+            APK Signing: Enabled
+            Signature Verification: Passed
+            SHA256 Checksum: Included
+
+            Built with GitHub Actions.
+          files: |
+            signed/ZooPLAY-release.apk
+            signed/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+          make_latest: true
