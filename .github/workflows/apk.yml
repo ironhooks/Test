@@ -40,11 +40,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Android SDK
-        run: |
-          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+      - name: Setup Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
 
       - name: Install Android SDK Packages
         run: |
@@ -65,11 +64,6 @@ jobs:
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      - name: Setup Gradle 8.9
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.9"
-
       - name: Install Download Tool
         run: |
           python -m pip install --upgrade pip
@@ -86,9 +80,13 @@ jobs:
             exit 1
           fi
 
-          gdown --fuzzy "$DRIVE_URL" -O source.zip
+          gdown "$DRIVE_URL" -O source.zip
 
-          test -s source.zip
+          if [ ! -s source.zip ]; then
+            echo "ERROR: Downloaded ZIP is empty"
+            exit 1
+          fi
+
           unzip -tq source.zip
 
           echo "Source ZIP downloaded successfully"
@@ -120,11 +118,6 @@ jobs:
           if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ] && \
              [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
             echo "ERROR: app module build file not found"
-            exit 1
-          fi
-
-          if [ ! -f "$PROJECT_DIR/gradle/libs.versions.toml" ]; then
-            echo "ERROR: Version catalog not found"
             exit 1
           fi
 
@@ -200,7 +193,7 @@ jobs:
 
           echo "Release keystore verified"
 
-      - name: Build Unsigned Release APK
+      - name: Build Release APK
         run: |
           set -euo pipefail
 
@@ -314,6 +307,7 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
+
     permissions:
       contents: write
 
