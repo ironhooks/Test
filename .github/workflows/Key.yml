@@ -1,0 +1,51 @@
+
+name: Create ZooPLAY Release Keystore
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  create-keystore:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Generate Release Keystore
+        env:
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "Required password secrets are missing"
+            exit 1
+          fi
+
+          keytool -genkeypair \
+            -v \
+            -keystore zooplay-release.jks \
+            -alias zooplay \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass "$STORE_PASSWORD" \
+            -keypass "$KEY_PASSWORD" \
+            -dname "CN=ZooPLAY, OU=Android, O=ironhook, L=Dhaka, ST=Dhaka, C=BD"
+
+          base64 -w 0 zooplay-release.jks > keystore-base64.txt
+
+      - name: Upload Keystore Base64
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZooPLAY-Keystore-Base64
+          path: keystore-base64.txt
+          retention-days: 1
